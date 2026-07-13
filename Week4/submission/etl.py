@@ -1,52 +1,64 @@
 import psycopg2
 from psycopg2.extras import RealDictCursor
-import logging
 import os
-from dotenv import load_dotenv 
+from dotenv import load_dotenv
+import logging
 
 
+# Configure Python's built-in logging system
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s  %(levelname)s  %(message)s"
+    format = "%(asctime)s  %(levelname)s  %(message)s"
 )
+
 logger = logging.getLogger(__name__)
 
 load_dotenv()
 
 SOURCE_DB_CONFIG = dict(
-    host=    os.getenv("DB_HOST"),
-    port =   os.getenv("DB_PORT"),
-    dbname = os.getenv("DB_NAME"),
-    user=    os.getenv("DB_USER"),
-    password=os.getenv("DB_PASSWORD")
+    host=    os.getenv("SRC_DB_HOST"),
+    port =   os.getenv("SRC_DB_PORT"),
+    dbname = os.getenv("SRC_DB_NAME"),
+    user=    os.getenv("SRC_DB_USER"),
+    password=os.getenv("SRC_DB_PASSWORD")
 )
+
 DEST_DB_CONFIG = dict(
     host=    os.getenv("DEST_DB_HOST"),
     port =   os.getenv("DEST_DB_PORT"),
     dbname = os.getenv("DEST_DB_NAME"),
     user=    os.getenv("DEST_DB_USER"),
-    password=os.getenv("DEST_DB_PASSWORD")
+    password=os.getenv("DEST_DB_PASSWORD") 
 )
 
-
-
-def extract(conn,sql):
-    try:
-        with conn.cursor(cursor_factory =RealDictCursor ) as curr:
-            curr.execute(sql)
+# Define extract function to fetch data from database. 
+# It will be used in all table extraction functions to avoid code duplication.
+def extract(conn, sql, params=None):
+    try :
+        with conn.cursor(cursor_factory = RealDictCursor ) as curr:
+            curr.execute(sql, params)
             rows = curr.fetchall()
             logger.info(f"Extracted {len(rows)} from the table")
         return rows
     except Exception as e:
         logger.error(str(e))
-        raise 
-    
+        raise
+
+# # Watermark for incremental load. Only trips after this timestamp will be extracted.
+# if no rows in fact_trips, return '-infinity' to extract all trips from source DB.
+def extract_watermark(conn):
+    extract_watermark_sql = """
+        SELECT MAX(requested_at) AS watermark FROM fact_trips;
+    """
+    watermark = extract(conn, extract_watermark_sql)
+    return watermark[0]["watermark"] if watermark[0]["watermark"] is not None else '-infinity' 
+
 def extract_driver(conn):
-     extract_driver_sql = """
+    extract_driver_sql = """
     SELECT
         driver_id ,
         name,
-        status ,
+        status,
         joined_at,
         CASE
             WHEN joined_at >= NOW() - INTERVAL '6 months'  THEN '0-6 months'
@@ -57,11 +69,7 @@ def extract_driver(conn):
     FROM
         drivers d ;
     """
-     return extract(conn,extract_driver_sql)
-
-    
-
-
+    return extract(conn, extract_driver_sql) 
 
 def load_dim_driver(conn,driver_data):
     insert_dim_driver_sql = """
@@ -85,10 +93,9 @@ def load_dim_driver(conn,driver_data):
         logger.error(str(e))
         raise
 
-
 def extract_passenger(conn):
     extract_passenger_sql = """
-    SELECT
+    select
         passenger_id,
         name,
         status,
@@ -98,7 +105,6 @@ def extract_passenger(conn):
         passengers p;
     """
     return extract(conn, extract_passenger_sql)
-
 
 def load_dim_passenger(conn, passenger_data):
     insert_dim_passenger_sql = """
@@ -122,8 +128,51 @@ def load_dim_passenger(conn, passenger_data):
         logger.error(str(e))
         raise
 
+def extract_vehicle(conn):
+    extract_vehicle_sql = """
+    SELECT
+        vehicle_id,
+        plate_number,
+        make,
+        model,
+        year,
+        color,
+        category,
+        is_active
+    FROM
+        vehicles v;
+    """
+    return extract(conn, extract_vehicle_sql)
+
+def load_dim_vehicle(conn, vehicle_data):
+    insert_dim_vehicle_sql = """
+ INSERT INTO dim_vehicle
+    (vehicle_id, plate_number, make, model, year, color, category, is_active)
+    VALUES ( %(vehicle_id)s,
+             %(plate_number)s,
+             %(make)s,
+             %(model)s,
+             %(year)s,
+             %(color)s,
+             %(category)s,
+             %(is_active)s
+            )
+    ON CONFLICT DO NOTHING
+"""
+    try:
+        with conn.cursor() as curr:
+            curr.executemany(insert_dim_vehicle_sql, vehicle_data)
+            logger.info(f"{curr.rowcount} inserted to dim_vehicle")
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        logger.error(str(e))
+        raise
 
 def extract_location(conn):
+    # Bucket state_province into US census regions for reporting; anything
+    # outside the USA, or a state/province not covered by the lists below,
+    # falls through to 'International'.
     extract_location_sql = """
     SELECT
         location_id,
@@ -158,7 +207,6 @@ def extract_location(conn):
     """
     return extract(conn, extract_location_sql)
 
-
 def load_dim_location(conn, location_data):
     insert_dim_location_sql = """
  INSERT INTO dim_location
@@ -183,7 +231,6 @@ def load_dim_location(conn, location_data):
         logger.error(str(e))
         raise
 
-
 def extract_payment_method(conn):
     extract_payment_method_sql = """
     SELECT
@@ -195,7 +242,6 @@ def extract_payment_method(conn):
         payment_methods pm;
     """
     return extract(conn, extract_payment_method_sql)
-
 
 def load_dim_payment_method(conn, payment_method_data):
     insert_dim_payment_method_sql = """
@@ -217,7 +263,6 @@ def load_dim_payment_method(conn, payment_method_data):
         conn.rollback()
         logger.error(str(e))
         raise
-
 
 def extract_promo_code(conn):
     extract_promo_code_sql = """
@@ -255,11 +300,12 @@ def load_dim_promo_code(conn, promo_code_data):
         logger.error(str(e))
         raise
 
-def extract_trips(conn):
+def extract_trips(conn, watermark):
     extract_trip_sql = """
       SELECT
         t.trip_id,
         t.driver_id,
+        t.vehicle_id,
         t.passenger_id,
         t.pickup_location_id,
         t.dropoff_location_id,
@@ -278,13 +324,15 @@ def extract_trips(conn):
         tc.cancelled_by          -- from trip_cancellations (NULL for non-cancelled)
     FROM  trips t
     LEFT JOIN trip_cancellations tc ON t.trip_id = tc.trip_id
+    WHERE t.requested_at > %(watermark)s
     ORDER BY t.requested_at
         """
-    return extract(conn,extract_trip_sql)
+    return extract(conn, extract_trip_sql, {"watermark": watermark})
 
 def load_lookup_dim(conn):
-    logger.info("Loading lookup table into memmory")
+    logger.info("Loading lookup table into memory")
     lookup = {}
+
     with conn.cursor() as curr:
         curr.execute("SELECT driver_id, driver_key FROM dim_driver")
         lookup["driver"] = {r[0]:r[1] for r in curr.fetchall()}
@@ -298,23 +346,44 @@ def load_lookup_dim(conn):
         curr.execute("SELECT payment_method_id, payment_method_key FROM dim_payment_method")
         lookup["payment_method"] = {r[0]:r[1] for r in curr.fetchall()}
 
+        curr.execute("SELECT vehicle_id, vehicle_key FROM dim_vehicle")
+        lookup["vehicle"] = {r[0]:r[1] for r in curr.fetchall()}
+
         curr.execute("SELECT promo_code_id, promo_code_key FROM dim_promo_code")
         lookup["promo_code"] = {r[0]:r[1] for r in curr.fetchall()}
 
+        # dim_time/dim_date have no natural id -> surrogate key mapping to reuse
+        # here, so just load their keys into a set-like dict (value is a dummy
+        # True) so transform() can do a cheap "in" check against valid keys.
+        curr.execute("SELECT time_key FROM dim_time")
+        lookup["time"] = {r[0]: True for r in curr.fetchall()}
+
         curr.execute("SELECT date_key FROM dim_date")
         lookup["date"] = {r[0]: True for r in curr.fetchall()}
+
     return lookup
 
 
 def transform(oltp_row, lookups):
+
     fact_rows = []
     skipped = 0
+
     for row in oltp_row:
         trip_id = row["trip_id"]
 
+        # Encode requested_at as an integer YYYYMMDD to match dim_date's key format.
         date_key = int(row["requested_at"].strftime("%Y%m%d"))
         if date_key not in lookups["date"]:
             logger.warning(f"trip {trip_id}: date_key {date_key} outside of dim_date range — skipped")
+            skipped += 1
+            continue
+
+        # Round requested_at down to its 15-minute bucket, encoded as HHMM
+        # (e.g. 21:37 -> 2130), to match dim_time's key format.
+        time_key = (row["requested_at"].hour * 100) + (row["requested_at"].minute // 15) * 15
+        if time_key not in lookups["time"]:
+            logger.warning(f"trip {trip_id}: time_key {time_key} outside of dim_time range — skipped")
             skipped += 1
             continue
 
@@ -327,6 +396,12 @@ def transform(oltp_row, lookups):
         passenger_key = lookups["passenger"].get(row["passenger_id"])
         if passenger_key is None:
             logger.warning(f"trip {trip_id}: passenger_id {row['passenger_id']} not in dim_passenger — skipped")
+            skipped += 1
+            continue
+
+        vehicle_key = lookups["vehicle"].get(row["vehicle_id"])
+        if vehicle_key is None:
+            logger.warning(f"trip {trip_id}: vehicle_id {row['vehicle_id']} not in dim_vehicle — skipped")
             skipped += 1
             continue
 
@@ -361,13 +436,17 @@ def transform(oltp_row, lookups):
                 skipped += 1
                 continue
 
-        # computed column
+        # computed column: fare = (base fare * surge multiplier) + tip - discount,
+        # with nullable source fields coalesced to 0 so the arithmetic never
+        # blows up on None.
         base_fare = row['base_fare'] or 0
         tip_amount = row["tip_amount"] or 0
         surge_multiplier = row["surge_multiplier"] or 0
         discount_amount = row["discount_amount"] or 0
         fare_amount  = round(base_fare * surge_multiplier + tip_amount - discount_amount,2)
 
+        # duration only makes sense once a trip has actually completed —
+        # cancelled/in-progress trips have no completed_at, so leave it NULL.
         duration_minutes = None
         if row["status"] == "completed" and row["completed_at"]:
             delta = row["completed_at"] - row["requested_at"]
@@ -376,8 +455,10 @@ def transform(oltp_row, lookups):
         fact_rows.append({
             "source_trip_id":       trip_id,
             "date_key":             date_key,
+            "time_key":             time_key,
             "driver_key":           driver_key,
             "passenger_key":        passenger_key,
+            "vehicle_key":          vehicle_key,
             "pickup_location_key":  pickup_location_key,
             "dropoff_location_key": dropoff_location_key,
             "payment_method_key":   payment_method_key,
@@ -397,21 +478,25 @@ def transform(oltp_row, lookups):
     logger.info(f"Transformed {len(fact_rows)} rows, skipped {skipped}")
     return fact_rows
 
-
 def load_fact_trips(conn, fact_data):
     insert_fact_trips_sql = """
+ 
  INSERT INTO fact_trips
-    (source_trip_id, date_key, driver_key, passenger_key,
-     pickup_location_key, dropoff_location_key,
+
+    (source_trip_id, date_key, time_key, driver_key, passenger_key,
+     vehicle_key, pickup_location_key, dropoff_location_key,
      payment_method_key, promo_code_key,
      base_fare, tip_amount, discount_amount, fare_amount,
      distance_km, duration_minutes,
      driver_rating, passenger_rating,
      surge_multiplier, requested_at)
+
     VALUES ( %(source_trip_id)s,
              %(date_key)s,
+             %(time_key)s,
              %(driver_key)s,
              %(passenger_key)s,
+             %(vehicle_key)s,
              %(pickup_location_key)s,
              %(dropoff_location_key)s,
              %(payment_method_key)s,
@@ -442,7 +527,6 @@ def load_fact_trips(conn, fact_data):
         logger.error(str(e))
         raise
 
-
 def main():
     """
     Extract all dimension data from the source DB and load them into the target DB.
@@ -456,6 +540,9 @@ def main():
         passenger_data = extract_passenger(src_conn)
         load_dim_passenger(dst_conn, passenger_data)
 
+        vehicle_data = extract_vehicle(src_conn)
+        load_dim_vehicle(dst_conn, vehicle_data)
+
         location_data = extract_location(src_conn)
         load_dim_location(dst_conn, location_data)
 
@@ -466,7 +553,9 @@ def main():
         load_dim_promo_code(dst_conn, promo_code_data)
 
         lookups = load_lookup_dim(dst_conn)
-        rows = extract_trips(src_conn)
+        watermark = extract_watermark(dst_conn)
+
+        rows = extract_trips(src_conn, watermark)
         fact_rows = transform(rows, lookups)
         load_fact_trips(dst_conn, fact_rows)
 
@@ -477,4 +566,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

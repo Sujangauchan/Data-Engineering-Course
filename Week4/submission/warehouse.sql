@@ -1,3 +1,4 @@
+
 CREATE TABLE dim_date (
     date_key        INTEGER      PRIMARY KEY,      -- e.g. 20240315
     full_date       DATE         NOT NULL UNIQUE,
@@ -75,6 +76,20 @@ CREATE TABLE dim_promo_code (
 );
 
 
+CREATE TABLE dim_vehicle (
+    vehicle_key     SERIAL       PRIMARY KEY,
+    vehicle_id      INTEGER      UNIQUE,        -- NULL = "No Promo" sentinel row
+	plate_number    VARCHAR(30),
+    make            VARCHAR(30),                    -- percent / flat
+	model           VARCHAR(50),
+    year            SMALLINT,
+    color           VARCHAR (20),
+    category        VARCHAR (20),
+    is_active       BOOLEAN       
+);
+
+
+
 CREATE TABLE fact_trips (
     trip_key                SERIAL          PRIMARY KEY,
     source_trip_id          INTEGER         NOT NULL UNIQUE,   -- OLTP trips.trip_id — for lineage + ON CONFLICT
@@ -87,6 +102,8 @@ CREATE TABLE fact_trips (
     dropoff_location_key    INTEGER         NOT NULL REFERENCES dim_location(location_key),
     payment_method_key      INTEGER         REFERENCES dim_payment_method(payment_method_key),
     promo_code_key          INTEGER         REFERENCES dim_promo_code(promo_code_key),
+    vehicle_key             INTEGER         REFERENCES dim_vehicle(vehicle_key), -- Can be null if the driver is not available
+    time_key                INTEGER         NOT NULL REFERENCES dim_time(time_key), -- Based on requested_at field so it's not null  
  
     -- ── Additive measures ───────────────────────────────────────────────────
     base_fare               NUMERIC(10,2),
@@ -105,7 +122,7 @@ CREATE TABLE fact_trips (
     surge_multiplier        NUMERIC(4,2),   -- ratio; never SUM, only AVG
  
     -- ── Audit timestamp ──────────────────────────────────────────────────────
-    requested_at            TIMESTAMP       NOT NULL
+    requested_at            TIMESTAMP       NOT NULL   -- kept for incremental watermark queries
 );
 
 
@@ -143,6 +160,7 @@ FROM generate_series(
 -- 96 rows — one per 15-minute bucket across 24 hours.
 -- ETL maps each trip's requested_at minute to the nearest 15-min bucket.
 -- ─────────────────────────────────────────────────────────────────────────────
+
 INSERT INTO dim_time (time_key, hour, minute_bucket, time_label, time_of_day, is_rush_hour)
 SELECT
     (h * 100 + m)::INTEGER                               AS time_key,   -- e.g. 1430
