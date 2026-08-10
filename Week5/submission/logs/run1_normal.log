@@ -1,0 +1,30 @@
+2026-07-19 22:38:59,390  INFO  Starting INCREMENTAL pipeline run
+2026-07-19 22:38:59,466  INFO  Extracted 1 rows
+2026-07-19 22:38:59,466  INFO  Watermark for dim_driver.joined_at: 2000-01-01 00:00:00
+2026-07-19 22:38:59,467  INFO  Extracted 1 rows
+2026-07-19 22:38:59,467  INFO  Watermark for dim_passenger.created_at: 2000-01-01 00:00:00
+2026-07-19 22:38:59,468  INFO  Extracted 25 rows
+2026-07-19 22:38:59,471  INFO  25 inserted to dim_driver
+2026-07-19 22:38:59,476  INFO  Extracted 45 rows
+2026-07-19 22:38:59,482  INFO  45 inserted to dim_passenger
+2026-07-19 22:38:59,483  INFO  Extracted 30 rows
+2026-07-19 22:38:59,487  INFO  30 inserted to dim_vehicle
+2026-07-19 22:38:59,489  INFO  Extracted 25 rows
+2026-07-19 22:38:59,492  INFO  25 inserted to dim_location
+2026-07-19 22:38:59,493  INFO  Extracted 7 rows
+2026-07-19 22:38:59,494  INFO  7 inserted to dim_payment_method
+2026-07-19 22:38:59,494  INFO  Extracted 10 rows
+2026-07-19 22:38:59,496  INFO  10 inserted to dim_promo_code
+2026-07-19 22:38:59,497  INFO  Dimension table load completed in 0.03s
+2026-07-19 22:38:59,497  INFO  Loading lookup table into memory
+2026-07-19 22:38:59,499  INFO  Lookup table extraction completed in 0.00s
+2026-07-19 22:38:59,500  INFO  Extracted 1 rows
+2026-07-19 22:38:59,500  INFO  Watermark for fact_trips.requested_at: 2000-01-01 00:00:00
+2026-07-19 22:38:59,615  INFO  Extracted 10000 rows
+2026-07-19 22:38:59,616  INFO  Trip extraction completed in 0.12s
+2026-07-19 22:38:59,654  INFO  Transformed 10000 rows, skipped 0
+2026-07-19 22:38:59,654  INFO  Transformation completed in 0.04s
+2026-07-19 22:38:59,656  INFO  Quality gate passed: 10000 rows, 5 checks
+2026-07-19 22:38:59,656  INFO  Quality check completed in 0.00s
+2026-07-19 22:39:00,713  INFO  10000 inserted to fact_trips
+2026-07-19 22:39:00,715  INFO  Trip table load completed in 1.06s
